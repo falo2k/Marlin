@@ -1,6 +1,8 @@
-MEMORY {
-	ram (rwx) : ORIGIN = 0x20000000, LENGTH = 48K - 40
-	rom (rx) : ORIGIN = 0x08007000, LENGTH = 512K - 28K
+/*updated 256K->512K to use full 512K undocumented program space of F103RC */
+MEMORY
+{
+  ram (rwx) : ORIGIN = 0x20000000, LENGTH = 48K - 40
+  rom (rx)  : ORIGIN = 0x08007000, LENGTH = 512K - 28K
 }
 
 /* Provide memory region aliases for common.inc */
