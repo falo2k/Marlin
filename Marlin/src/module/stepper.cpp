@@ -83,10 +83,6 @@ Stepper stepper; // Singleton
 
 #define BABYSTEPPING_EXTRA_DIR_WAIT
 
-#if HAS_MOTOR_CURRENT_PWM
-  bool Stepper::initialized; // = false
-#endif
-
 #ifdef __AVR__
   #include "speed_lookuptable.h"
 #endif
@@ -110,7 +106,7 @@ Stepper stepper; // Singleton
   #include "../feature/dac/dac_dac084s085.h"
 #endif
 
-#if HAS_DIGIPOTSS
+#if HAS_MOTOR_CURRENT_SPI
   #include <SPI.h>
 #endif
 
@@ -142,8 +138,12 @@ Stepper stepper; // Singleton
   bool Stepper::separate_multi_axis = false;
 #endif
 
-#if HAS_MOTOR_CURRENT_PWM
-  uint32_t Stepper::motor_current_setting[3]; // Initialized by settings.load()
+#if HAS_MOTOR_CURRENT_SPI || HAS_MOTOR_CURRENT_PWM
+  bool Stepper::initialized; // = false
+  uint32_t Stepper::motor_current_setting[MOTOR_CURRENT_COUNT]; // Initialized by settings.load()
+  #if HAS_MOTOR_CURRENT_SPI
+    constexpr uint32_t Stepper::digipot_count[];
+  #endif
 #endif
 
 // private:
@@ -155,7 +155,7 @@ uint8_t Stepper::last_direction_bits, // = 0
 
 bool Stepper::abort_current_block;
 
-#if DISABLED(MIXING_EXTRUDER) && EXTRUDERS > 1
+#if DISABLED(MIXING_EXTRUDER) && HAS_MULTI_EXTRUDER
   uint8_t Stepper::last_moved_extruder = 0xFF;
 #endif
 
@@ -191,7 +191,7 @@ uint32_t Stepper::advance_divisor = 0,
          Stepper::decelerate_after,          // The count at which to start decelerating
          Stepper::step_event_count;          // The total event count for the current block
 
-#if EXTRUDERS > 1 || ENABLED(MIXING_EXTRUDER)
+#if EITHER(HAS_MULTI_EXTRUDER, MIXING_EXTRUDER)
   uint8_t Stepper::stepper_extruder;
 #else
   constexpr uint8_t Stepper::stepper_extruder;
@@ -357,11 +357,11 @@ xyze_int8_t Stepper::count_direction{0};
 #elif ENABLED(DUAL_X_CARRIAGE)
   #define X_APPLY_DIR(v,ALWAYS) do{ \
     if (extruder_duplication_enabled || ALWAYS) { X_DIR_WRITE(v); X2_DIR_WRITE(mirrored_duplication_mode ? !(v) : v); } \
-    else if (movement_extruder()) X2_DIR_WRITE(v); else X_DIR_WRITE(v); \
+    else if (last_moved_extruder) X2_DIR_WRITE(v); else X_DIR_WRITE(v); \
   }while(0)
   #define X_APPLY_STEP(v,ALWAYS) do{ \
     if (extruder_duplication_enabled || ALWAYS) { X_STEP_WRITE(v); X2_STEP_WRITE(v); } \
-    else if (movement_extruder()) X2_STEP_WRITE(v); else X_STEP_WRITE(v); \
+    else if (last_moved_extruder) X2_STEP_WRITE(v); else X_STEP_WRITE(v); \
   }while(0)
 #else
   #define X_APPLY_DIR(v,Q) X_DIR_WRITE(v)
@@ -2131,7 +2131,7 @@ uint32_t Stepper::block_phase_isr() {
         MIXER_STEPPER_SETUP();
       #endif
 
-      #if EXTRUDERS > 1
+      #if HAS_MULTI_EXTRUDER
         stepper_extruder = current_block->extruder;
       #endif
 
@@ -2156,7 +2156,7 @@ uint32_t Stepper::block_phase_isr() {
         || TERN(MIXING_EXTRUDER, false, stepper_extruder != last_moved_extruder)
       ) {
         last_direction_bits = current_block->direction_bits;
-        #if EXTRUDERS > 1
+        #if HAS_MULTI_EXTRUDER
           last_moved_extruder = stepper_extruder;
         #endif
 
@@ -2590,8 +2590,8 @@ void Stepper::init() {
 
   set_directions();
 
-  #if HAS_DIGIPOTSS || HAS_MOTOR_CURRENT_PWM
-    TERN_(HAS_MOTOR_CURRENT_PWM, initialized = true);
+  #if HAS_MOTOR_CURRENT_SPI || HAS_MOTOR_CURRENT_PWM
+    initialized = true;
     digipot_init();
   #endif
 }
@@ -2930,10 +2930,10 @@ void Stepper::report_positions() {
  * Software-controlled Stepper Motor Current
  */
 
-#if HAS_DIGIPOTSS
+#if HAS_MOTOR_CURRENT_SPI
 
   // From Arduino DigitalPotControl example
-  void Stepper::digitalPotWrite(const int16_t address, const int16_t value) {
+  void Stepper::set_digipot_value_spi(const int16_t address, const int16_t value) {
     WRITE(DIGIPOTSS_PIN, LOW);  // Take the SS pin low to select the chip
     SPI.transfer(address);      // Send the address and value via SPI
     SPI.transfer(value);
@@ -2941,7 +2941,7 @@ void Stepper::report_positions() {
     //delay(10);
   }
 
-#endif // HAS_DIGIPOTSS
+#endif // HAS_MOTOR_CURRENT_SPI
 
 #if HAS_MOTOR_CURRENT_PWM
 
@@ -2958,7 +2958,7 @@ void Stepper::report_positions() {
         #if ANY_PIN(MOTOR_CURRENT_PWM_E, MOTOR_CURRENT_PWM_E0, MOTOR_CURRENT_PWM_E1)
           case 2:
         #endif
-            digipot_current(i, motor_current_setting[i]);
+            set_digipot_current(i, motor_current_setting[i]);
         default: break;
       }
     }
@@ -2968,21 +2968,22 @@ void Stepper::report_positions() {
 
 #if !MB(PRINTRBOARD_G2)
 
-  #if HAS_DIGIPOTSS || HAS_MOTOR_CURRENT_PWM
+  #if HAS_MOTOR_CURRENT_SPI || HAS_MOTOR_CURRENT_PWM
 
-    void Stepper::digipot_current(const uint8_t driver, const int16_t current) {
+    void Stepper::set_digipot_current(const uint8_t driver, const int16_t current) {
+      if (WITHIN(driver, 0, COUNT(motor_current_setting) - 1))
+        motor_current_setting[driver] = current; // update motor_current_setting
 
-      #if HAS_DIGIPOTSS
+      if (!initialized) return;
+
+      #if HAS_MOTOR_CURRENT_SPI
+
+        //SERIAL_ECHOLNPAIR("Digipotss current ", current);
 
         const uint8_t digipot_ch[] = DIGIPOT_CHANNELS;
-        digitalPotWrite(digipot_ch[driver], current);
+        set_digipot_value_spi(digipot_ch[driver], current);
 
       #elif HAS_MOTOR_CURRENT_PWM
-
-        if (!initialized) return;
-
-        if (WITHIN(driver, 0, COUNT(motor_current_setting) - 1))
-          motor_current_setting[driver] = current; // update motor_current_setting
 
         #define _WRITE_CURRENT_PWM(P) analogWrite(pin_t(MOTOR_CURRENT_PWM_## P ##_PIN), 255L * current / (MOTOR_CURRENT_PWM_RANGE))
         switch (driver) {
@@ -3019,17 +3020,13 @@ void Stepper::report_positions() {
 
     void Stepper::digipot_init() {
 
-      #if HAS_DIGIPOTSS
-
-        static const uint8_t digipot_motor_current[] = DIGIPOT_MOTOR_CURRENT;
+      #if HAS_MOTOR_CURRENT_SPI
 
         SPI.begin();
         SET_OUTPUT(DIGIPOTSS_PIN);
 
-        LOOP_L_N(i, COUNT(digipot_motor_current)) {
-          //digitalPotWrite(digipot_ch[i], digipot_motor_current[i]);
-          digipot_current(i, digipot_motor_current[i]);
-        }
+        LOOP_L_N(i, COUNT(motor_current_setting))
+          set_digipot_current(i, motor_current_setting[i]);
 
       #elif HAS_MOTOR_CURRENT_PWM
 
