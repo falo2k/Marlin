@@ -28,6 +28,8 @@
 #include "../../../feature/tmc_util.h"
 #include "../../../module/stepper/indirection.h"
 
+#define NUM_AXIS 4
+
 /**
  * M122: Debug TMC drivers
  */
