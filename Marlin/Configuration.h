@@ -1232,13 +1232,15 @@
 
 // @section machine
 
+// Removing 10mm off top and bottom for clips
 // The size of the printable area
 #define X_BED_SIZE 230
-#define Y_BED_SIZE 220
+#define Y_BED_SIZE 200
 
 // Travel limits (mm) after homing, corresponding to endstop positions.
 #define X_MIN_POS -20
-#define Y_MIN_POS -16
+// Added 10mm for bottom clip allowance
+#define Y_MIN_POS -26
 #define Z_MIN_POS 0
 #define X_MAX_POS X_BED_SIZE
 #define Y_MAX_POS Y_BED_SIZE
